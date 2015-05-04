@@ -80,6 +80,15 @@ class Cm_Cache_Backend_Redis extends Zend_Cache_Backend implements Zend_Cache_Ba
     /** @var string */
     protected $_compressionLib;
 
+    /**
+     * On large data sets SUNION slows down considerably when used with too many arguments
+     * so this is used to chunk the SUNION into a few commands where the number of set ids
+     * exceeds this setting.
+     * 
+     * @var int
+     */
+    protected $_sunionChunkSize = 500;
+
     /** @var bool */
     protected $_useLua = false;
 
@@ -176,6 +185,10 @@ class Cm_Cache_Backend_Redis extends Zend_Cache_Backend implements Zend_Cache_Ba
             $this->_compressionLib = 'gzip';
         }
         $this->_compressPrefix = substr($this->_compressionLib,0,2).self::COMPRESS_PREFIX;
+
+        if ( isset($options['sunion_chunk_size']) && $options['sunion_chunk_size'] > 0) {
+            $this->_sunionChunkSize = (int) $options['sunion_chunk_size'];
+        }
 
         if (isset($options['use_lua'])) {
             $this->_useLua = (bool) $options['use_lua'];
@@ -432,23 +445,26 @@ class Cm_Cache_Backend_Redis extends Zend_Cache_Backend implements Zend_Cache_Ba
     protected function _removeByMatchingAnyTags($tags)
     {
         if ($this->_useLua) {
-            $pTags = $this->_preprocessTagIds($tags);
-            $sArgs = array(self::PREFIX_KEY, self::SET_TAGS, self::SET_IDS, ($this->_notMatchingTags ? 1 : 0), (int) $this->_luaMaxCStack);
-            if ( ! $this->_redis->evalSha(self::LUA_CLEAN_SH1, $pTags, $sArgs)) {
-                $script =
-                    "for i = 1, #KEYS, ARGV[5] do ".
-                        "local keysToDel = redis.call('SUNION', unpack(KEYS, i, math.min(#KEYS, i + ARGV[5] - 1))) ".
-                        "for _, keyname in ipairs(keysToDel) do ".
-                            "redis.call('DEL', ARGV[1]..keyname) ".
-                            "if (ARGV[4] == '1') then ".
-                                "redis.call('SREM', ARGV[3], keyname) ".
+            $tags = array_chunk($tags, $this->_sunionChunkSize);
+            foreach ($tags as $chunk) {
+                $chunk = $this->_preprocessTagIds($chunk);
+                $args = array(self::PREFIX_KEY, self::SET_TAGS, self::SET_IDS, ($this->_notMatchingTags ? 1 : 0), (int) $this->_luaMaxCStack);
+                if ( ! $this->_redis->evalSha(self::LUA_CLEAN_SH1, $chunk, $args)) {
+                    $script =
+                        "for i = 1, #KEYS, ARGV[5] do ".
+                            "local keysToDel = redis.call('SUNION', unpack(KEYS, i, math.min(#KEYS, i + ARGV[5] - 1))) ".
+                            "for _, keyname in ipairs(keysToDel) do ".
+                                "redis.call('DEL', ARGV[1]..keyname) ".
+                                "if (ARGV[4] == '1') then ".
+                                    "redis.call('SREM', ARGV[3], keyname) ".
+                                "end ".
                             "end ".
+                            "redis.call('DEL', unpack(KEYS, i, math.min(#KEYS, i + ARGV[5] - 1))) ".
+                            "redis.call('SREM', ARGV[2], unpack(KEYS, i, math.min(#KEYS, i + ARGV[5] - 1))) ".
                         "end ".
-                        "redis.call('DEL', unpack(KEYS, i, math.min(#KEYS, i + ARGV[5] - 1))) ".
-                        "redis.call('SREM', ARGV[2], unpack(KEYS, i, math.min(#KEYS, i + ARGV[5] - 1))) ".
-                    "end ".
-                    "return true";
-                $this->_redis->eval($script, $pTags, $sArgs);
+                        "return true";
+                    $this->_redis->eval($script, $chunk, $args);
+                }
             }
             return;
         }
@@ -757,10 +773,17 @@ class Cm_Cache_Backend_Redis extends Zend_Cache_Backend implements Zend_Cache_Ba
      */
     public function getIdsMatchingAnyTags($tags = array())
     {
+        $result = array();
         if ($tags) {
-            return (array) $this->_redis->sUnion( $this->_preprocessTagIds($tags));
+            $chunks = array_chunk($tags, $this->_sunionChunkSize);
+            foreach ($chunks as $chunk) {
+                $result = array_merge($result, (array) $this->_redis->sUnion( $this->_preprocessTagIds($chunk)));
+            }
+            if (count($chunks) > 1) {
+                $result = array_unique($result);    // since we are chunking requests, we must de-duplicate member names
+            }
         }
-        return array();
+        return $result;
     }
 
     /**
