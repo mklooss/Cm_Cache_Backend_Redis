@@ -147,11 +147,7 @@ class Cm_Cache_Backend_Redis extends Zend_Cache_Backend implements Zend_Cache_Ba
             Zend_Cache::throwException('Redis \'server\' not specified.');
         }
 
-        if ( empty($options['port']) && substr($options['server'],0,1) != '/' ) {
-            Zend_Cache::throwException('Redis \'port\' not specified.');
-        }
-
-        $port = isset($options['port']) ? $options['port'] : NULL;
+        $port = isset($options['port']) ? $options['port'] : 6379;
         $slaveSelect = isset($options['slave_select_callable']) && is_callable($options['slave_select_callable']) ? $options['slave_select_callable'] : null;
         $sentinelMaster =  empty($options['sentinel_master']) ? NULL : $options['sentinel_master'];
 
@@ -165,11 +161,12 @@ class Cm_Cache_Backend_Redis extends Zend_Cache_Backend implements Zend_Cache_Ba
             $servers = preg_split('/\s*,\s*/', trim($options['server']), NULL, PREG_SPLIT_NO_EMPTY);
             $sentinel = NULL;
             $exception = NULL;
+            for ($i = 0; $i <= $sentinelClientOptions->connectRetries; $i++) // Try each sentinel in round-robin fashion
             foreach ($servers as $server) {
                 try {
                     $sentinelClient = new Credis_Client($server, NULL, $sentinelClientOptions->timeout, $sentinelClientOptions->persistent);
                     $sentinelClient->forceStandalone();
-                    $sentinelClient->setMaxConnectRetries($sentinelClientOptions->connectRetries);
+                    $sentinelClient->setMaxConnectRetries(0);
                     if ($sentinelClientOptions->readTimeout) {
                         $sentinelClient->setReadTimeout($sentinelClientOptions->readTimeout);
                     }
@@ -199,8 +196,9 @@ class Cm_Cache_Backend_Redis extends Zend_Cache_Backend implements Zend_Cache_Ba
                     }
 
                     $this->_redis = $redisMaster;
-                    break;
+                    break 2;
                 } catch (Exception $e) {
+                    unset($sentinelClient);
                     $exception = $e;
                 }
             }
@@ -212,13 +210,16 @@ class Cm_Cache_Backend_Redis extends Zend_Cache_Backend implements Zend_Cache_Ba
             if ( ! empty($options['load_from_slaves'])) {
                 $slaves = $sentinel->getSlaveClients($sentinelMaster);
                 if ($slaves) {
+                    if ($options['load_from_slaves'] == 2) {
+                        array_push($slaves, $this->_redis); // Also send reads to the master
+                    }
                     if ($slaveSelect) {
                         $slave = $slaveSelect($slaves, $this->_redis);
                     } else {
                         $slaveKey = array_rand($slaves, 1);
                         $slave = $slaves[$slaveKey]; /* @var $slave Credis_Client */
                     }
-                    if ($slave instanceof Credis_Client) {
+                    if ($slave instanceof Credis_Client && $slave != $this->_redis) {
                         try {
                             $this->_applyClientOptions($slave, TRUE);
                             $this->_slave = $slave;
