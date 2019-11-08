@@ -16,21 +16,30 @@ Works with any Zend Framework project including all versions of Magento!
  - Supports a configurable "auto expiry lifetime" which, if set, will be used as the TTL when the key otherwise wouldn't expire. In combination with "auto expiry refresh on load" offers a more sane cache management strategy for Magento's `Enterprise_PageCache` module.
  - __Unit tested!__
 
-## INSTALLATION (Magento)
+## REQUIREMENTS
 
- 1. Install [redis](http://redis.io/download) (2.4+ required)
- 2. Install [phpredis](https://github.com/nicolasff/phpredis) (optional)
+As this backend uses [Credis](https://github.com/colinmollenhour/credis) there are no additional requirements, but for improved performance you can install [phpredis](https://github.com/nicolasff/phpredis) which is a compiled extension.
 
    * For 2.4 support you must use the "master" branch or a tagged version newer than Aug 19, 2011.
    * phpredis is optional, but it is much faster than standalone mode
    * phpredis does not support setting read timeouts at the moment (see pull request #260). If you receive read errors (“read error on connection”), this
      might be the reason.
 
- 3. Install this module using [modman](https://github.com/colinmollenhour/modman):
+## INSTALLATION (Composer)
+
+```
+$ composer require colinmollenhour/cache-backend-redis
+```
+
+## INSTALLATION (Magento)
+
+You may use the Composer installation (above) or you can install via [modman](https://github.com/colinmollenhour/modman):
 
     * `modman clone https://github.com/colinmollenhour/Cm_Cache_Backend_Redis`
 
- 4. Edit app/etc/local.xml to configure:
+### Magento Configuration:
+
+Edit app/etc/local.xml to configure:
 
         <!-- This is a child node of config/global -->
         <cache>
@@ -116,13 +125,31 @@ Example configuration:
           <backend_options>
             <server>tcp://redis-master:6379</server>
             <load_from_slave>tcp://redis-slaves:6379</load_from_slave>
+            <master_write_only>0</master_write_only>  <!-- Use 1 to prevent reads from master -->
+            <timeout>0.5</timeout>
+          </backend_options>
+        </cache>
+
+### Static Configuration
+
+You may also statically specify the master and slave servers by passing either an array to `load_from_slave` or a string
+with multiple addresses separated by a comma.
+
+        <!-- This is a child node of config/global -->
+        <cache>
+          <backend>Cm_Cache_Backend_Redis</backend>
+          <backend_options>
+            <server>tcp://redis-master:6379</server>
+            <load_from_slave>tcp://redis-slave1:6379,tcp://redis-slave2:6379</load_from_slave>
+            <master_write_only>0</master_write_only>  <!-- Use 1 to prevent reads from master -->
             <timeout>0.5</timeout>
           </backend_options>
         </cache>
 
 ## ElastiCache
 
-The following example configuration lets you use ElastiCache Redis (cluster mode disabled) where the writes are sent to the Primary node and reads are sent to the replicas. This lets you distribute the read traffic between the different nodes.  
+The following example configuration lets you use ElastiCache Redis (cluster mode disabled) where the writes are sent to
+the Primary node and reads are sent to the replicas. This lets you distribute the read traffic between the different nodes.  
 
 The instructions to find the primary and read replica endpoints are [here](http://docs.aws.amazon.com/AmazonElastiCache/latest/UserGuide/Endpoints.html#Endpoints.Find.Redis).
 
@@ -130,29 +157,25 @@ The instructions to find the primary and read replica endpoints are [here](http:
         <backend_options>
           <server>primary-endpoint.0001.euw1.cache.amazonaws.com</server>
           <port>6379</port>
-          <database>0</database>        <!-- Make sure database is 0 -->
-          .
-          . <!-- Other settings -->
-          .
-          <cluster>
-            <master>
-              <node-001>
-                <server>primary-endpoint.0001.euw1.cache.amazonaws.com</server>
-                <port>6379</port>
-              </node-001>
-            </master>
-            <slave>
-              <node-001>
-                <server>replica-endpoint-1.jwbaun.0001.euw1.cache.amazonaws.com</server>
-                <port>6379</port>
-              </node-001>
-              <node-002>
-                <server>replica-endpoint-2.jwbaun.0001.euw1.cache.amazonaws.com</server>
-                <port>6379</port>
-              </node-002>
-            </slave>
-          </cluster>
+          <database>0</database>                    <!-- Make sure database is 0 -->
+          <master_write_only>1</master_write_only>
+          <load_from_slave>
+            <node-001>
+              <server>replica-endpoint-1.jwbaun.0001.euw1.cache.amazonaws.com</server>
+              <port>6379</port>
+            </node-001>
+            <node-002>
+              <server>replica-endpoint-2.jwbaun.0001.euw1.cache.amazonaws.com</server>
+              <port>6379</port>
+            </node-002>
+          </load_from_slave>
         </backend_options>
+
+#### DEPRECATION NOTICE
+
+Previously the ElastiCache config instructions suggested setting up a `<cluster>` node but this functionality was flawed
+and is no longer supported. The config is still parsed and loaded for backwards-compatibility but chooses a random slave
+to read from rather than using md5 hash of the keys. 
 
 ## RELATED / TUNING
 
